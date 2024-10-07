@@ -6,9 +6,17 @@ require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Middlewares
+// Middleware
 app.use(cors());
 app.use(express.json());
+
+// Translation Cache
+let translationCache = {};
+
+// Languages Cache
+let languagesCache = null;
+let languagesCacheTimestamp = 0;
+const languagesCacheTTL = 24 * 60 * 60 * 1000; // Cache languages for 24 hours
 
 // API for translating text
 app.post("/api/translate", (req, res) => {
@@ -21,10 +29,16 @@ app.post("/api/translate", (req, res) => {
       .json({ error: "Missing required fields: text, source, target" });
   }
 
+  // Check cache first for translation
+  const cacheKey = `${source}-${target}-${text}`;
+  if (translationCache[cacheKey]) {
+    return res.json({ translatedText: translationCache[cacheKey] });
+  }
+
   const options = {
     method: "POST",
     hostname: "microsoft-translator-text.p.rapidapi.com",
-    path: "/translate?to=" + target + "&from=" + source + "&api-version=3.0",
+    path: `/translate?to=${target}&from=${source}&api-version=3.0`,
     headers: {
       "x-rapidapi-key": process.env.RAPIDAPI_KEY,
       "x-rapidapi-host": "microsoft-translator-text.p.rapidapi.com",
@@ -51,6 +65,10 @@ app.post("/api/translate", (req, res) => {
       try {
         const result = JSON.parse(body.toString());
         const translatedText = result[0].translations[0].text;
+
+        // Store translation in cache
+        translationCache[cacheKey] = translatedText;
+
         res.json({ translatedText });
       } catch (error) {
         console.error("Error parsing JSON:", error);
@@ -70,6 +88,16 @@ app.post("/api/translate", (req, res) => {
 
 // API to get available languages
 app.get("/api/languages", (req, res) => {
+  const currentTime = Date.now();
+
+  // Check if languages are cached and not expired
+  if (
+    languagesCache &&
+    currentTime - languagesCacheTimestamp < languagesCacheTTL
+  ) {
+    return res.json(languagesCache);
+  }
+
   const options = {
     method: "GET",
     hostname: "microsoft-translator-text.p.rapidapi.com",
@@ -95,7 +123,14 @@ app.get("/api/languages", (req, res) => {
           .status(response.statusCode)
           .json({ error: "Error from languages API" });
       }
-      res.json(JSON.parse(body.toString()));
+
+      const languages = JSON.parse(body.toString());
+
+      // Cache the languages response
+      languagesCache = languages;
+      languagesCacheTimestamp = Date.now();
+
+      res.json(languages);
     });
   });
 
@@ -107,10 +142,12 @@ app.get("/api/languages", (req, res) => {
   request.end();
 });
 
-app.listen(port, () => {
-  console.log(`Server is running on port: ${port}`);
-});
-
+// Test route
 app.get("/api/test", (req, res) => {
   res.send("API is working");
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`Server is running on port: ${port}`);
 });
